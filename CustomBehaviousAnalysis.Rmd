@@ -1,0 +1,165 @@
+---
+title: "Sathvika Tarimela"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r}
+# Remove all the list from enviroment
+rm(list=ls())
+
+
+#Loading Libraries
+
+library("ggplot2")
+library("dplyr")
+library("scales")
+
+#Data Upload 
+data<-read.csv("attributes_report.csv",stringsAsFactors = F)
+eng_log<-read.csv("engagement_report.csv",stringsAsFactors = F)
+
+
+data<-data %>% mutate(subscription_flag = ifelse(subscribed_after_free_trial == "true", 1, 0)) 
+
+data$subscription_flag<-as.factor(data$subscription_flag)
+
+
+
+ggplot(data,aes(subscription_flag))+geom_bar(aes(fill=subscription_flag))
+ggplot(data,aes(company_type))+geom_bar(aes(fill=company_type))
+
+
+
+#Subsciption Analysis ----Visualisation
+
+ggplot(data %>% count(company_type, subscription_flag) %>%    # Group by company_type, then count number in each group
+         mutate(pct=n/sum(n),                                 # Calculate percent within each region
+                ypos = n-0.25*n),                             # Calculate label positions
+       aes(company_type, n, fill=subscription_flag)) +
+  geom_bar(stat="identity") +
+  geom_text(aes(label=paste0(sprintf("%1.1f", pct*100),"%"), y=ypos))+
+  ylab("count")+
+  labs(title="Subscription Analysis", 
+       subtitle="Subscription Count Across Company Types") 
+
+ggplot(data,aes(company_type))+geom_bar( aes(subscription_flag,fill=subscription_flag),width = 0.5)+facet_wrap(~company_type)
+
+
+# Activity log analysis 
+comp_activity<-merge(x=data,y=eng_log,by="company")
+
+comp_activity$company<-as.factor(comp_activity$company)
+comp_activity_Sub<-comp_activity[comp_activity$subscription_flag==1,]
+comp_activity_UnSub<-comp_activity[comp_activity$subscription_flag==0,]
+
+#G1
+ggplot(comp_activity_Sub,aes(login_day,login_times,colour=company))+geom_line()+theme(legend.position="none")
+ggplot(comp_activity_UnSub,aes(login_day,login_times,colour=company))+geom_line()+theme(legend.position="none")
+
+
+#G2
+ggplot(comp_activity_Sub[1:1000,],aes(login_day,login_times,colour=company))+geom_line()+theme(legend.position="none")+facet_wrap(~company)
+ggplot(comp_activity_UnSub[1:1000,],aes(login_day,login_times,colour=company))+geom_line()+theme(legend.position="none")+facet_wrap(~company)
+
+# (G1) From the above graphs we can say that unsubscribed companies never opened more than 3 times for any particular day
+# (G2) company wise activity log for both sub and unsub 
+
+
+# daylevel_sub<-comp_activity_Sub %>% group_by(login_day,login_times) %>% summarise(uniquecompany=n())
+# daylevel_unsub<-comp_activity_UnSub %>% group_by(login_day,login_times) %>% summarise(uniquecompany=n())
+
+
+daylevel_sub<-comp_activity_Sub %>% count(login_day,login_times) %>% mutate(perc=(n/sum(n)*100))
+daylevel_unsub<-comp_activity_UnSub %>% count(login_day,login_times) %>% mutate(perc=(n/sum(n)*100))
+
+
+#Converting login times to factor levels
+daylevel_sub$login_times<-as.factor(daylevel_sub$login_times)
+daylevel_unsub$login_times<-as.factor(daylevel_unsub$login_times)
+
+
+#  (G3) Graph to understand the behaviour of login times across sub vs unsub
+
+ggplot(daylevel_sub,aes(login_times,perc))+geom_point(aes(color=login_times,fill=login_times))+facet_wrap(~login_day)+ylab("Percentage of companies")+labs(title="Percentage of companies vs Login times for each day")
+ggplot(daylevel_unsub,aes(login_times,perc))+geom_point(aes(color=login_times,fill=login_times))+facet_wrap(~login_day) + ylab("Percentage of companies")+labs(title="Percentage of companies vs Login times for each day")
+
+# From above graph  G3, for unsubscribed company: there is constant ~80% having login times as 0
+
+
+#Modelling#
+
+#DataPrep
+
+comp_wise_ana<-comp_activity %>% group_by(company)%>% summarise(total_logins=sum(login_times),avg_logins=round(mean(login_times),2),med_logins=median(login_times),first_login_day=ifelse(min(login_day[login_times>0])==Inf,0,min(login_day[login_times>0])),last_login_day=ifelse(max(login_day[login_times>0])==-Inf,0,max(login_day[login_times>0])),total_login_days=n_distinct(login_day[login_times>0]))
+comp_wise_ana<-merge(comp_wise_ana,unique(comp_activity[,c("company","company_type","subscription_flag")] ),by="company")
+
+inputData<-comp_wise_ana
+
+
+table(inputData$subscription_flag)
+
+#As there is class bias in input data, we are creating train and test data in equal proportions
+
+
+# Create Training Data
+input_ones <- inputData[which(inputData$subscription_flag == 1), ]  # all 1's
+input_zeros <- inputData[which(inputData$subscription_flag == 0), ]  # all 0's
+
+set.seed(100)  # for repeatability of samples
+
+input_ones_training_rows <- sample(1:nrow(input_ones), 0.75*nrow(input_ones))  # 1's for training
+input_zeros_training_rows <- sample(1:nrow(input_zeros), 0.75*nrow(input_zeros))  # 0's for training. Pick as many 0's as 1's
+
+training_ones <- input_ones[input_ones_training_rows, ]  
+training_zeros <- input_zeros[input_zeros_training_rows, ]
+trainingData <- rbind(training_ones, training_zeros)  # row bind the 1's and 0's 
+
+# Create Test Data
+test_ones <- input_ones[-input_ones_training_rows, ]
+test_zeros <- input_zeros[-input_zeros_training_rows, ]
+testData <- rbind(test_ones, test_zeros)  # row bind the 1's and 0's 
+
+
+trainingData$company_type<-as.factor(trainingData$company_type)
+testData$company_type<-as.factor(testData$company_type)
+
+
+
+logitMod <- glm(subscription_flag~company_type+total_logins+avg_logins+first_login_day+last_login_day+total_login_days, data=trainingData, family=binomial(link="logit"))
+summary(logitMod)
+
+predicted <- predict(logitMod, testData, type="response")
+
+
+library(InformationValue)
+optCutOff <- optimalCutoff(testData$subscription_flag, predicted)[1] 
+
+#Confusion Matrix
+table(testData$subscription_flag, predicted >optCutOff)
+
+library("plotROC")
+plotROC(testData$subscription_flag, predicted)
+
+
+sensitivity(testData$subscription_flag, predicted, threshold = optCutOff)
+specificity(testData$subscription_flag, predicted, threshold = optCutOff)
+
+
+
+#Train and Test Data Creation without considering bias#
+
+train<-sample(1:nrow(inputData), 0.7*nrow(inputData))
+trainingData<-inputData[train,]
+testData<-inputData[-train,]
+```
+
